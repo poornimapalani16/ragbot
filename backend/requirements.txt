@@ -29,3 +29,4 @@ requests
 
 # Resilience & utils
 tenacity
+langchain-text-splitters==0.3.5
