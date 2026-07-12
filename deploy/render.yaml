@@ -4,7 +4,7 @@ services:
     runtime: docker
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
-    plan: starter
+    plan: free
     healthCheckPath: /health
     envVars:
       - key: ENVIRONMENT
@@ -23,7 +23,4 @@ services:
         generateValue: true
       - key: RATE_LIMIT_PER_MINUTE
         value: "60"
-    disk:
-      name: rag-data
-      mountPath: /app/data
-      sizeGB: 1
+  
