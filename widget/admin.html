@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>RAG Chatbot Admin</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<style>
+  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 780px; margin: 40px auto; padding: 0 20px; color: #1a1a2e; background:#fafafa;}
+  h1 { font-size: 22px; }
+  section { background:#fff; border:1px solid #e6e6ef; border-radius:12px; padding:20px; margin-bottom:24px; }
+  label { display:block; font-size:13px; font-weight:600; margin:12px 0 4px; }
+  input, textarea { width:100%; padding:9px 10px; border:1px solid #ddd; border-radius:8px; font-size:14px; }
+  button { margin-top:14px; background:#4F46E5; color:#fff; border:none; padding:10px 18px; border-radius:8px; cursor:pointer; font-weight:600; }
+  button:hover { background:#4338CA; }
+  pre { background:#0f172a; color:#e2e8f0; padding:14px; border-radius:8px; overflow-x:auto; font-size:12.5px; }
+  .msg { margin-top:10px; font-size:13px; }
+  .msg.error { color:#dc2626; }
+  .msg.success { color:#16a34a; }
+  .row { display:flex; gap:12px; }
+  .row > div { flex:1; }
+</style>
+</head>
+<body>
+  <h1>⚙️ RAG Chatbot Admin</h1>
+  <p style="color:#666;font-size:14px;">Manage bots and knowledge bases for the Advanced RAG Chatbot backend.</p>
+
+  <section>
+    <h2>1. Connect to your backend</h2>
+    <label>API Base URL</label>
+    <input id="apiBase" placeholder="https://your-backend-url.com" />
+    <label>Admin API Key</label>
+    <input id="adminKey" type="password" placeholder="ADMIN_API_KEY from your .env" />
+  </section>
+
+  <section>
+    <h2>2. Create a new bot</h2>
+    <label>Bot name</label>
+    <input id="botName" placeholder="e.g. Acme Support Bot" />
+    <label>Welcome message</label>
+    <input id="welcomeMsg" placeholder="Hi! How can I help you today?" />
+    <div class="row">
+      <div>
+        <label>Primary color</label>
+        <input id="primaryColor" type="color" value="#4F46E5" />
+      </div>
+    </div>
+    <label>Custom system prompt (optional)</label>
+    <textarea id="systemPrompt" rows="3" placeholder="Leave blank to use the default support-agent persona"></textarea>
+    <button onclick="createBot()">Create Bot</button>
+    <div id="createMsg" class="msg"></div>
+    <pre id="createResult" style="display:none;"></pre>
+  </section>
+
+  <section>
+    <h2>3. Add knowledge to a bot</h2>
+    <label>Bot ID</label>
+    <input id="ingestBotId" placeholder="paste bot_id here" />
+    <label>Bot API key</label>
+    <input id="ingestApiKey" placeholder="paste api_key here" />
+    <label>Upload a document (PDF / DOCX / TXT / MD / CSV)</label>
+    <input id="fileInput" type="file" />
+    <button onclick="uploadFile()">Upload Document</button>
+    <label style="margin-top:20px;">— or — ingest a webpage URL</label>
+    <input id="urlInput" placeholder="https://example.com/faq" />
+    <button onclick="uploadUrl()">Ingest URL</button>
+    <div id="ingestMsg" class="msg"></div>
+  </section>
+
+  <section>
+    <h2>4. Embed on your website</h2>
+    <p style="font-size:13px;color:#666;">Paste the snippet from step 2's result into your site's HTML, right before <code>&lt;/body&gt;</code>.</p>
+  </section>
+
+<script>
+function base() { return document.getElementById('apiBase').value.replace(/\/$/, ''); }
+function adminKey() { return document.getElementById('adminKey').value; }
+
+function showMsg(id, text, type) {
+  const el = document.getElementById(id);
+  el.textContent = text;
+  el.className = 'msg ' + (type || '');
+}
+
+async function createBot() {
+  showMsg('createMsg', 'Creating…');
+  try {
+    const res = await fetch(base() + '/bots', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-admin-key': adminKey() },
+      body: JSON.stringify({
+        name: document.getElementById('botName').value,
+        welcome_message: document.getElementById('welcomeMsg').value || undefined,
+        primary_color: document.getElementById('primaryColor').value,
+        system_prompt: document.getElementById('systemPrompt').value || undefined,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Request failed');
+    showMsg('createMsg', 'Bot created successfully!', 'success');
+    const resultEl = document.getElementById('createResult');
+    resultEl.style.display = 'block';
+    resultEl.textContent = JSON.stringify(data, null, 2);
+    document.getElementById('ingestBotId').value = data.bot_id;
+    document.getElementById('ingestApiKey').value = data.api_key;
+  } catch (e) {
+    showMsg('createMsg', 'Error: ' + e.message, 'error');
+  }
+}
+
+async function uploadFile() {
+  const fileInput = document.getElementById('fileInput');
+  if (!fileInput.files.length) { showMsg('ingestMsg', 'Choose a file first.', 'error'); return; }
+  showMsg('ingestMsg', 'Uploading…');
+  try {
+    const formData = new FormData();
+    formData.append('bot_id', document.getElementById('ingestBotId').value);
+    formData.append('file', fileInput.files[0]);
+    const res = await fetch(base() + '/ingest/file', {
+      method: 'POST',
+      headers: { 'x-api-key': document.getElementById('ingestApiKey').value },
+      body: formData,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Upload failed');
+    showMsg('ingestMsg', `Success: added ${data.chunks_added} chunks from ${data.source}`, 'success');
+  } catch (e) {
+    showMsg('ingestMsg', 'Error: ' + e.message, 'error');
+  }
+}
+
+async function uploadUrl() {
+  const url = document.getElementById('urlInput').value;
+  if (!url) { showMsg('ingestMsg', 'Enter a URL first.', 'error'); return; }
+  showMsg('ingestMsg', 'Fetching and ingesting URL…');
+  try {
+    const res = await fetch(base() + '/ingest/url', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': document.getElementById('ingestApiKey').value },
+      body: JSON.stringify({ bot_id: document.getElementById('ingestBotId').value, url }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Ingestion failed');
+    showMsg('ingestMsg', `Success: added ${data.chunks_added} chunks from ${data.source}`, 'success');
+  } catch (e) {
+    showMsg('ingestMsg', 'Error: ' + e.message, 'error');
+  }
+}
+</script>
+</body>
+</html>
