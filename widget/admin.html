@@ -12,12 +12,16 @@
   input, textarea { width:100%; padding:9px 10px; border:1px solid #ddd; border-radius:8px; font-size:14px; }
   button { margin-top:14px; background:#4F46E5; color:#fff; border:none; padding:10px 18px; border-radius:8px; cursor:pointer; font-weight:600; }
   button:hover { background:#4338CA; }
-  pre { background:#0f172a; color:#e2e8f0; padding:14px; border-radius:8px; overflow-x:auto; font-size:12.5px; }
+  button.secondary { background:#fff; color:#4F46E5; border:1px solid #4F46E5; margin-left:8px; }
+  button.secondary:hover { background:#f2f1fd; }
+  pre { background:#0f172a; color:#e2e8f0; padding:14px; border-radius:8px; overflow-x:auto; font-size:12.5px; white-space:pre-wrap; word-break:break-all; }
   .msg { margin-top:10px; font-size:13px; }
   .msg.error { color:#dc2626; }
   .msg.success { color:#16a34a; }
   .row { display:flex; gap:12px; }
   .row > div { flex:1; }
+  .hint { font-size:12px; color:#888; margin-top:4px; }
+  .btn-row { display:flex; flex-wrap:wrap; align-items:center; }
 </style>
 </head>
 <body>
@@ -26,8 +30,8 @@
 
   <section>
     <h2>1. Connect to your backend</h2>
-    <label>API Base URL</label>
-    <input id="apiBase" placeholder="https://your-backend-url.com" />
+    <label>API Base URL (your Railway backend)</label>
+    <input id="apiBase" placeholder="https://your-app.up.railway.app" />
     <label>Admin API Key</label>
     <input id="adminKey" type="password" placeholder="ADMIN_API_KEY from your .env" />
   </section>
@@ -68,7 +72,19 @@
 
   <section>
     <h2>4. Embed on your website</h2>
-    <p style="font-size:13px;color:#666;">Paste the snippet from step 2's result into your site's HTML, right before <code>&lt;/body&gt;</code>.</p>
+    <p style="font-size:13px;color:#666;">This snippet updates automatically every time you create a bot in step 2, using the Bot ID / API key from that bot and the API Base URL from step 1.</p>
+
+    <label>Widget script URL</label>
+    <input id="widgetScriptUrl" placeholder="https://your-deployed-frontend.netlify.app/widget.js" />
+    <div class="hint">This is wherever <code>widget.js</code> ends up living once you deploy this frontend folder (Netlify/Vercel). It auto-fills once this admin page itself is deployed, but you can override it.</div>
+
+    <pre id="embedSnippet" style="margin-top:14px;">Create a bot above to generate your embed snippet…</pre>
+
+    <div class="btn-row">
+      <button onclick="copySnippet()">Copy Snippet</button>
+      <button class="secondary" onclick="downloadEmbedExample()">Download embed-example.html</button>
+    </div>
+    <div id="embedMsg" class="msg"></div>
   </section>
 
 <script>
@@ -80,6 +96,43 @@ function showMsg(id, text, type) {
   el.textContent = text;
   el.className = 'msg ' + (type || '');
 }
+
+// Best-effort guess at where widget.js lives: same origin as this admin
+// page, since you'll typically deploy admin.html, embed-example.html and
+// widget.js together as one static site. Editable if that's wrong.
+(function initWidgetUrl() {
+  const field = document.getElementById('widgetScriptUrl');
+  if (window.location.protocol.startsWith('http') && window.location.hostname !== 'localhost') {
+    field.value = window.location.origin + '/widget.js';
+  }
+})();
+
+function currentSnippet() {
+  const botId = document.getElementById('ingestBotId').value.trim();
+  const apiKey = document.getElementById('ingestApiKey').value.trim();
+  const apiBase = document.getElementById('apiBase').value.trim();
+  const widgetUrl = document.getElementById('widgetScriptUrl').value.trim() || 'widget.js';
+
+  if (!botId || !apiKey) return null;
+
+  return `<script
+  src="${widgetUrl}"
+  data-bot-id="${botId}"
+  data-api-key="${apiKey}"
+  data-api-base="${apiBase}">
+<\/script>`;
+}
+
+function refreshSnippet() {
+  const snippet = currentSnippet();
+  const el = document.getElementById('embedSnippet');
+  el.textContent = snippet || 'Create a bot above to generate your embed snippet…';
+}
+
+// Keep the snippet live as any of the underlying fields change.
+['ingestBotId', 'ingestApiKey', 'apiBase', 'widgetScriptUrl'].forEach(function (id) {
+  document.getElementById(id).addEventListener('input', refreshSnippet);
+});
 
 async function createBot() {
   showMsg('createMsg', 'Creating…');
@@ -102,6 +155,7 @@ async function createBot() {
     resultEl.textContent = JSON.stringify(data, null, 2);
     document.getElementById('ingestBotId').value = data.bot_id;
     document.getElementById('ingestApiKey').value = data.api_key;
+    refreshSnippet();
   } catch (e) {
     showMsg('createMsg', 'Error: ' + e.message, 'error');
   }
@@ -144,6 +198,48 @@ async function uploadUrl() {
   } catch (e) {
     showMsg('ingestMsg', 'Error: ' + e.message, 'error');
   }
+}
+
+function copySnippet() {
+  const snippet = currentSnippet();
+  if (!snippet) { showMsg('embedMsg', 'Create a bot first (step 2).', 'error'); return; }
+  navigator.clipboard.writeText(snippet).then(function () {
+    showMsg('embedMsg', 'Snippet copied to clipboard!', 'success');
+  }, function () {
+    showMsg('embedMsg', 'Could not copy automatically — select the text above and copy manually.', 'error');
+  });
+}
+
+function downloadEmbedExample() {
+  const snippet = currentSnippet();
+  if (!snippet) { showMsg('embedMsg', 'Create a bot first (step 2).', 'error'); return; }
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Client Website</title>
+</head>
+<body>
+
+  <h1>Welcome to Acme Corp</h1>
+  <p>This is a normal website. The chat bubble in the bottom-right corner is the embedded RAG chatbot.</p>
+
+  ${snippet}
+</body>
+</html>
+`;
+
+  const blob = new Blob([html], { type: 'text/html' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'embed-example.html';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showMsg('embedMsg', 'Downloaded embed-example.html with current bot_id / api_key baked in!', 'success');
 }
 </script>
 </body>

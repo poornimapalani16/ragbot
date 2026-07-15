@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -6,14 +5,22 @@
   <title>Client Website</title>
 </head>
 <body>
+
   <h1>Welcome to Acme Corp</h1>
   <p>This is a normal website. The chat bubble in the bottom-right corner is the embedded RAG chatbot.</p>
 
+  <!--
+    This file gets overwritten every time you click "Download embed-example.html"
+    in admin.html (step 4). That button bakes in the current bot_id, api_key,
+    and API base URL automatically -- no manual copy-pasting needed.
+
+    Below is just a placeholder snippet so the file works out of the box.
+  -->
   <script
     src="widget.js"
-    data-bot-id="8d85a6bc3fdf24b3"
-    data-api-key="aMGxvJpyqMOyxnChp8tm7YVPWGn5_4Rh"
-    data-api-base="http://localhost:8000">
+    data-bot-id="REPLACE_WITH_BOT_ID"
+    data-api-key="REPLACE_WITH_API_KEY"
+    data-api-base="https://your-app.up.railway.app">
   </script>
 </body>
 </html>

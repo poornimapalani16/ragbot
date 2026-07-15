@@ -23,8 +23,7 @@ class Settings(BaseSettings):
     PORT: int = 8000
 
     # --- CORS (widget must be embeddable on ANY website) ---
-    ALLOWED_ORIGINS: str = "*"  # comma-separated list, or "*" for all
-
+    ALLOWED_ORIGINS: str = "*"
     # --- LLM Provider ---
     # One of: "gemini", "openai", "anthropic"
     LLM_PROVIDER: str = "gemini"
