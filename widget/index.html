@@ -14,6 +14,7 @@
   button:hover { background:#4338CA; }
   button.secondary { background:#fff; color:#4F46E5; border:1px solid #4F46E5; margin-left:8px; }
   button.secondary:hover { background:#f2f1fd; }
+  button:disabled { opacity:.5; cursor:default; }
   pre { background:#0f172a; color:#e2e8f0; padding:14px; border-radius:8px; overflow-x:auto; font-size:12.5px; white-space:pre-wrap; word-break:break-all; }
   .msg { margin-top:10px; font-size:13px; }
   .msg.error { color:#dc2626; }
@@ -22,18 +23,51 @@
   .row > div { flex:1; }
   .hint { font-size:12px; color:#888; margin-top:4px; }
   .btn-row { display:flex; flex-wrap:wrap; align-items:center; }
+  .file-status { font-size:12.5px; margin-top:10px; padding:8px 10px; border-radius:8px; background:#f7f7fb; border:1px solid #e6e6ef; }
+  .file-status.ok { color:#16a34a; }
+  .file-status.warn { color:#b45309; }
+
+  /* ---------- Login gate ---------- */
+  #lockScreen {
+    position:fixed; inset:0; background:#1a1a2e; display:flex; align-items:center;
+    justify-content:center; z-index:1000;
+  }
+  #lockBox {
+    background:#fff; border-radius:16px; padding:32px; width:100%; max-width:360px;
+    box-shadow:0 20px 60px rgba(0,0,0,0.35);
+  }
+  #lockBox h2 { margin:0 0 6px; font-size:19px; }
+  #lockBox p { margin:0 0 18px; font-size:13px; color:#666; }
+  #lockMsg { min-height:18px; }
+  body.locked > *:not(#lockScreen) { display:none; }
 </style>
 </head>
-<body>
+<body class="locked">
+
+  <!-- ===================== LOGIN GATE ===================== -->
+  <div id="lockScreen">
+    <div id="lockBox">
+      <h2>🔒 Admin Access</h2>
+      <p>Enter your backend URL and Admin API Key to continue. Only someone with your real key can create bots or touch your data — the actual security lives on your backend, this is just to keep the panel out of casual view.</p>
+      <label>API Base URL</label>
+      <input id="lockApiBase" placeholder="https://your-app.up.railway.app" />
+      <label>Admin API Key</label>
+      <input id="lockAdminKey" type="password" placeholder="ADMIN_API_KEY from your .env" />
+      <button onclick="unlock()" style="width:100%;">Unlock Admin Panel</button>
+      <div id="lockMsg" class="msg"></div>
+    </div>
+  </div>
+
   <h1>⚙️ RAG Chatbot Admin</h1>
   <p style="color:#666;font-size:14px;">Manage bots and knowledge bases for the Advanced RAG Chatbot backend.</p>
 
   <section>
-    <h2>1. Connect to your backend</h2>
-    <label>API Base URL (your Railway backend)</label>
+    <h2>1. Connected backend</h2>
+    <label>API Base URL</label>
     <input id="apiBase" placeholder="https://your-app.up.railway.app" />
     <label>Admin API Key</label>
     <input id="adminKey" type="password" placeholder="ADMIN_API_KEY from your .env" />
+    <div class="hint">Filled in automatically from the login screen. Change here if needed.</div>
   </section>
 
   <section>
@@ -71,12 +105,12 @@
   </section>
 
   <section>
-    <h2>4. Embed on your website</h2>
-    <p style="font-size:13px;color:#666;">This snippet updates automatically every time you create a bot in step 2, using the Bot ID / API key from that bot and the API Base URL from step 1.</p>
+    <h2>4. Get the embed snippet</h2>
+    <p style="font-size:13px;color:#666;">Updates automatically from the bot created in step 2.</p>
 
     <label>Widget script URL</label>
     <input id="widgetScriptUrl" placeholder="https://your-deployed-frontend.netlify.app/widget.js" />
-    <div class="hint">This is wherever <code>widget.js</code> ends up living once you deploy this frontend folder (Netlify/Vercel). It auto-fills once this admin page itself is deployed, but you can override it.</div>
+    <div class="hint">Wherever <code>widget.js</code> lives once this frontend is deployed. Auto-fills once this admin page itself is deployed, editable if wrong.</div>
 
     <pre id="embedSnippet" style="margin-top:14px;">Create a bot above to generate your embed snippet…</pre>
 
@@ -85,6 +119,23 @@
       <button class="secondary" onclick="downloadEmbedExample()">Download embed-example.html</button>
     </div>
     <div id="embedMsg" class="msg"></div>
+  </section>
+
+  <section>
+    <h2>5. Add the chatbot to a real website</h2>
+    <p style="font-size:13px;color:#666;">
+      Upload the HTML file(s) of a website you have (e.g. its <code>index.html</code>).
+      This tool inserts the embed snippet automatically, right before <code>&lt;/body&gt;</code>,
+      and gives you back ready-to-deploy files — no manual editing needed.
+    </p>
+    <div class="hint" style="margin-bottom:10px;">
+      This only works on files you upload yourself. It cannot reach into a website that's already live elsewhere —
+      you (or whoever owns that site) still need to re-upload the modified file to that site's host.
+    </div>
+    <label>Upload one or more HTML files</label>
+    <input id="siteFiles" type="file" accept=".html,.htm" multiple />
+    <button onclick="injectIntoFiles()">Inject Chatbot &amp; Download</button>
+    <div id="injectStatus"></div>
   </section>
 
 <script>
@@ -97,15 +148,52 @@ function showMsg(id, text, type) {
   el.className = 'msg ' + (type || '');
 }
 
+/* ===================== LOGIN GATE ===================== */
+async function unlock() {
+  const apiBase = document.getElementById('lockApiBase').value.trim().replace(/\/$/, '');
+  const key = document.getElementById('lockAdminKey').value.trim();
+
+  if (!apiBase || !key) {
+    showMsg('lockMsg', 'Enter both fields.', 'error');
+    return;
+  }
+
+  showMsg('lockMsg', 'Checking…');
+
+  // Best-effort check against the backend. If a GET /bots (list) route exists,
+  // this confirms the key is real. If the route doesn't exist (404), we don't
+  // block you -- your POST /bots and /ingest endpoints still enforce the key
+  // for anything that actually matters.
+  try {
+    const res = await fetch(apiBase + '/bots', {
+      method: 'GET',
+      headers: { 'x-admin-key': key },
+    });
+    if (res.status === 401 || res.status === 403) {
+      showMsg('lockMsg', 'Incorrect Admin API Key.', 'error');
+      return;
+    }
+  } catch (e) {
+    // Network/CORS error on this check shouldn't block you from proceeding --
+    // the real enforcement happens on every actual write request anyway.
+  }
+
+  document.getElementById('apiBase').value = apiBase;
+  document.getElementById('adminKey').value = key;
+  document.body.classList.remove('locked');
+  document.getElementById('lockScreen').remove();
+  initWidgetUrl();
+}
+
 // Best-effort guess at where widget.js lives: same origin as this admin
 // page, since you'll typically deploy admin.html, embed-example.html and
 // widget.js together as one static site. Editable if that's wrong.
-(function initWidgetUrl() {
+function initWidgetUrl() {
   const field = document.getElementById('widgetScriptUrl');
   if (window.location.protocol.startsWith('http') && window.location.hostname !== 'localhost') {
     field.value = window.location.origin + '/widget.js';
   }
-})();
+}
 
 function currentSnippet() {
   const botId = document.getElementById('ingestBotId').value.trim();
@@ -129,7 +217,6 @@ function refreshSnippet() {
   el.textContent = snippet || 'Create a bot above to generate your embed snippet…';
 }
 
-// Keep the snippet live as any of the underlying fields change.
 ['ingestBotId', 'ingestApiKey', 'apiBase', 'widgetScriptUrl'].forEach(function (id) {
   document.getElementById(id).addEventListener('input', refreshSnippet);
 });
@@ -229,17 +316,69 @@ function downloadEmbedExample() {
 </body>
 </html>
 `;
+  downloadBlob(html, 'embed-example.html');
+  showMsg('embedMsg', 'Downloaded embed-example.html with current bot_id / api_key baked in!', 'success');
+}
 
-  const blob = new Blob([html], { type: 'text/html' });
+/* ===================== STEP 5: inject into uploaded site files ===================== */
+function downloadBlob(content, filename) {
+  const blob = new Blob([content], { type: 'text/html' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'embed-example.html';
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
-  showMsg('embedMsg', 'Downloaded embed-example.html with current bot_id / api_key baked in!', 'success');
+}
+
+function injectSnippetIntoHtml(html, snippet) {
+  // Case-insensitive search for the closing </body> tag, insert just before it.
+  const bodyCloseRegex = /<\/body\s*>/i;
+  if (bodyCloseRegex.test(html)) {
+    return html.replace(bodyCloseRegex, snippet + '\n</body>');
+  }
+  // No </body> found (unusual/partial file) -- just append at the end.
+  return html + '\n' + snippet + '\n';
+}
+
+async function injectIntoFiles() {
+  const snippet = currentSnippet();
+  const statusEl = document.getElementById('injectStatus');
+  statusEl.innerHTML = '';
+
+  if (!snippet) {
+    statusEl.innerHTML = '<div class="file-status warn">Create a bot first (step 2) so there\'s a snippet to insert.</div>';
+    return;
+  }
+
+  const input = document.getElementById('siteFiles');
+  if (!input.files.length) {
+    statusEl.innerHTML = '<div class="file-status warn">Choose at least one .html file first.</div>';
+    return;
+  }
+
+  for (const file of input.files) {
+    try {
+      const text = await file.text();
+      const alreadyHasWidget = text.includes('data-bot-id=');
+      const merged = injectSnippetIntoHtml(text, snippet);
+      downloadBlob(merged, file.name);
+
+      const note = document.createElement('div');
+      note.className = 'file-status ' + (alreadyHasWidget ? 'warn' : 'ok');
+      note.textContent = alreadyHasWidget
+        ? `${file.name}: downloaded, but this file already had a widget snippet -- check for duplicates.`
+        : `${file.name}: chatbot inserted, downloaded and ready to redeploy.`;
+      statusEl.appendChild(note);
+    } catch (e) {
+      const note = document.createElement('div');
+      note.className = 'file-status warn';
+      note.textContent = `${file.name}: failed to process (${e.message}).`;
+      statusEl.appendChild(note);
+    }
+  }
 }
 </script>
 </body>
