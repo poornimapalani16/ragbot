@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     # --- LLM Provider ---
     # One of: "gemini", "openai", "anthropic"
     LLM_PROVIDER: str = "gemini"
-    LLM_MODEL: str = "gemini-1.5-flash"
+    LLM_MODEL: str = "gemini-2.5-flash"
     GOOGLE_API_KEY: str = ""
     OPENAI_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""

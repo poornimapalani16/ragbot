@@ -21,7 +21,7 @@ def get_chat_model():
             if not settings.GOOGLE_API_KEY:
                 raise LLMProviderError("GOOGLE_API_KEY is not set in the environment.")
             return ChatGoogleGenerativeAI(
-                model=settings.LLM_MODEL or "gemini-1.5-flash",
+                model=settings.LLM_MODEL or "gemini-2.5-flash",
                 google_api_key=settings.GOOGLE_API_KEY,
                 temperature=settings.LLM_TEMPERATURE,
             )
