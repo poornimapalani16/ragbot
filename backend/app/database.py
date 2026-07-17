@@ -1,12 +1,17 @@
 """
-- BotRegistry: lightweight JSON-file-backed store for per-bot configuration
-  (name, API key, prompt, styling). Using a flat file (instead of requiring
-  Postgres/MySQL) keeps the whole system deployable with zero external
-  infra -- a deliberate tradeoff for "easily deployable" per the brief.
-  Swap `_load`/`_save` for a real DB later without touching callers.
+- BotRegistry: Postgres-backed store for per-bot configuration
+  (name, API key, prompt, styling). Previously a flat JSON file, but that
+  lived on Railway's ephemeral disk and got wiped on every redeploy.
+  Now backed by Railway's Postgres plugin (DATABASE_URL is auto-injected
+  once you add the Postgres service in Railway) -- a real, persistent store,
+  while keeping the exact same public interface (`get_bot`, `create_bot`,
+  etc.) so nothing else in the app needs to change.
 
-- VectorStoreManager: wraps ChromaDB, one collection per bot_id, so every
-  embedded website's knowledge base stays isolated from every other's.
+- VectorStoreManager: wraps ChromaDB. Previously a local PersistentClient
+  (also wiped on redeploy since Railway's app disk is ephemeral and no
+  Volume was available on the plan). Now uses Chroma Cloud, a hosted
+  Chroma instance, so vector data survives restarts/redeploys the same
+  way Postgres does for bot metadata.
 """
 import json
 import os
@@ -15,6 +20,8 @@ import threading
 from typing import Optional
 
 import chromadb
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 
@@ -24,7 +31,6 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-_REGISTRY_PATH = os.path.join(os.path.dirname(settings.CHROMA_PERSIST_DIR), "bots.json")
 _lock = threading.Lock()
 
 # Embedding model is loaded once and shared across the whole app (expensive to init).
@@ -40,28 +46,40 @@ def get_embeddings() -> HuggingFaceEmbeddings:
 
 
 class BotRegistry:
-    def __init__(self, path: str = _REGISTRY_PATH):
-        self.path = path
-        if not os.path.exists(self.path):
-            self._save({})
+    """
+    Same public interface as before (create_bot, get_bot, verify_api_key,
+    list_bots, delete_bot) -- only the storage backend changed, from a
+    local JSON file to Postgres. Each bot is stored as one row: a unique
+    bot_id column plus a JSONB column holding the rest of the bot's data,
+    which keeps this class simple and avoids a rigid schema migration
+    every time a new bot field gets added later.
+    """
 
-    def _load(self) -> dict:
-        try:
-            with open(self.path, "r") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError):
-            logger.warning("Bot registry file missing/corrupt, reinitializing empty registry.")
-            return {}
+    def __init__(self, dsn: str = None):
+        self.dsn = dsn or settings.DATABASE_URL
+        if not self.dsn:
+            raise RuntimeError(
+                "DATABASE_URL is not set. Add a PostgreSQL plugin in Railway -- "
+                "it injects this automatically."
+            )
+        self._init_table()
 
-    def _save(self, data: dict):
-        with _lock:
-            tmp_path = self.path + ".tmp"
-            with open(tmp_path, "w") as f:
-                json.dump(data, f, indent=2)
-            os.replace(tmp_path, self.path)  # atomic write, avoids corruption on crash
+    def _connect(self):
+        return psycopg2.connect(self.dsn, cursor_factory=RealDictCursor)
+
+    def _init_table(self):
+        with _lock, self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bots (
+                    bot_id TEXT PRIMARY KEY,
+                    data JSONB NOT NULL
+                )
+                """
+            )
+            conn.commit()
 
     def create_bot(self, name: str, welcome_message: str, primary_color: str, system_prompt: Optional[str]) -> dict:
-        data = self._load()
         bot_id = secrets.token_hex(8)
         api_key = secrets.token_urlsafe(24)
         bot = {
@@ -77,17 +95,22 @@ class BotRegistry:
                 "the visitor contact support. Keep answers concise and clear."
             ),
         }
-        data[bot_id] = bot
-        self._save(data)
+        with _lock, self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO bots (bot_id, data) VALUES (%s, %s)",
+                (bot_id, json.dumps(bot)),
+            )
+            conn.commit()
         logger.info(f"Created bot {bot_id} ({name})")
         return bot
 
     def get_bot(self, bot_id: str) -> dict:
-        data = self._load()
-        bot = data.get(bot_id)
-        if not bot:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT data FROM bots WHERE bot_id = %s", (bot_id,))
+            row = cur.fetchone()
+        if not row:
             raise BotNotFoundError(bot_id)
-        return bot
+        return row["data"]
 
     def verify_api_key(self, bot_id: str, api_key: str) -> dict:
         bot = self.get_bot(bot_id)
@@ -96,20 +119,30 @@ class BotRegistry:
         return bot
 
     def list_bots(self) -> list:
-        return list(self._load().values())
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT data FROM bots")
+            rows = cur.fetchall()
+        return [row["data"] for row in rows]
 
     def delete_bot(self, bot_id: str):
-        data = self._load()
-        if bot_id in data:
-            del data[bot_id]
-            self._save(data)
+        with _lock, self._connect() as conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM bots WHERE bot_id = %s", (bot_id,))
+            conn.commit()
 
 
 class VectorStoreManager:
-    """One Chroma collection per bot_id, using a shared persistent client."""
+    """
+    One Chroma collection per bot_id, same as before. Now backed by
+    Chroma Cloud (a hosted Chroma instance) instead of a local
+    PersistentClient, so collections survive Railway restarts/redeploys.
+    """
 
     def __init__(self):
-        self.client = chromadb.PersistentClient(path=settings.CHROMA_PERSIST_DIR)
+        self.client = chromadb.CloudClient(
+            tenant=settings.CHROMA_TENANT,
+            database=settings.CHROMA_DATABASE,
+            api_key=settings.CHROMA_API_KEY,
+        )
 
     def get_store(self, bot_id: str) -> Chroma:
         return Chroma(

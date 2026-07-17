@@ -38,7 +38,21 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
 
     # --- Vector store ---
+    # NOTE: CHROMA_PERSIST_DIR is kept only as a legacy/local-dev fallback.
+    # In production on Railway, VectorStoreManager uses Chroma Cloud instead
+    # (see CHROMA_TENANT / CHROMA_DATABASE / CHROMA_API_KEY below), because
+    # Railway's app disk is ephemeral and wipes local Chroma data on redeploy.
     CHROMA_PERSIST_DIR: str = str(BASE_DIR / "data" / "chroma")
+
+    # --- Chroma Cloud (persistent vector storage across redeploys) ---
+    CHROMA_TENANT: str = ""
+    CHROMA_DATABASE: str = ""
+    CHROMA_API_KEY: str = ""
+
+    # --- Bot registry database (persistent across redeploys) ---
+    # Auto-injected by Railway once you add the PostgreSQL plugin --
+    # no need to set this manually.
+    DATABASE_URL: str = ""
 
     # --- Ingestion ---
     UPLOAD_DIR: str = str(BASE_DIR / "data" / "uploads")
