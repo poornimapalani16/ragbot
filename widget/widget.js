@@ -31,6 +31,8 @@
   var state = {
     open: false,
     loading: false,
+    connecting: true,
+    slowNotice: false,
     config: { name: "Assistant", welcome_message: "Hi! How can I help?", primary_color: "#4F46E5" },
     messages: [], // { role: 'user'|'assistant', text }
   };
@@ -90,7 +92,14 @@
       "#rag-panel.rag-open{transform:translateY(0) scale(1);opacity:1;visibility:visible;pointer-events:auto;" +
       "transition:transform .22s cubic-bezier(.34,1.56,.64,1),opacity .18s ease,visibility 0s linear 0s;}" +
       "#rag-header{padding:14px 16px;color:#fff;display:flex;justify-content:space-between;align-items:center;}" +
+      "#rag-header .header-text{display:flex;flex-direction:column;gap:2px;}" +
       "#rag-header .title{font-weight:600;font-size:15px;}" +
+      ".rag-status{display:flex;align-items:center;gap:5px;font-size:11px;opacity:.85;font-weight:500;}" +
+      ".rag-status-dot{width:6px;height:6px;border-radius:50%;background:#fff;}" +
+      ".rag-status-online{background:#4ADE80;}" +
+      ".rag-status-connecting{background:#FBBF24;animation:ragPulse 1.2s ease-in-out infinite;}" +
+      "@keyframes ragPulse{0%,100%{opacity:.4;}50%{opacity:1;}}" +
+      ".rag-slow-notice{align-self:flex-start;font-size:11.5px;color:#8b93a7;padding:2px 4px 0;max-width:82%;animation:ragMsgIn .2s ease both;}" +
       "#rag-close{background:none;border:none;color:#fff;font-size:20px;cursor:pointer;line-height:1;opacity:.9;" +
       "border-radius:50%;width:26px;height:26px;display:flex;align-items:center;justify-content:center;" +
       "transition:background .15s ease,transform .15s ease;}" +
@@ -108,11 +117,25 @@
       ".rag-typing span:nth-child(2){animation-delay:.15s;}" +
       ".rag-typing span:nth-child(3){animation-delay:.3s;}" +
       "@keyframes ragBounce{0%,60%,100%{transform:translateY(0);opacity:.5;}30%{transform:translateY(-4px);opacity:1;}}" +
-      ".rag-msg ul,.rag-msg ol{margin:4px 0 8px;padding-left:18px;}" +
-      ".rag-msg li{margin-bottom:3px;}" +
-      ".rag-msg h1,.rag-msg h2,.rag-msg h3,.rag-msg h4,.rag-msg h5,.rag-msg h6{font-weight:600;line-height:1.3;}" +
-      ".rag-msg code{background:rgba(0,0,0,0.06);padding:1px 5px;border-radius:4px;font-family:Consolas,Monaco,monospace;font-size:12.5px;}" +
+      ".rag-msg ul,.rag-msg ol{margin:6px 0 10px;padding-left:20px;}" +
+      ".rag-msg li{margin-bottom:5px;line-height:1.5;}" +
+      ".rag-msg h1,.rag-msg h2,.rag-msg h3,.rag-msg h4,.rag-msg h5,.rag-msg h6{" +
+      "font-weight:700;line-height:1.35;color:var(--rag-accent,#4F46E5);letter-spacing:-0.01em;}" +
+      ".rag-msg h3{font-size:14.5px;margin-top:12px;padding-bottom:5px;border-bottom:1px solid rgba(0,0,0,0.08);}" +
+      ".rag-msg h4{font-size:13.5px;margin-top:10px;}" +
+      ".rag-msg h5,.rag-msg h6{font-size:13px;margin-top:8px;}" +
+      ".rag-msg.assistant h1,.rag-msg.assistant h2,.rag-msg.assistant h3,.rag-msg.assistant h4,.rag-msg.assistant h5,.rag-msg.assistant h6{margin-top:0;}" +
+      ".rag-msg strong{font-weight:700;color:inherit;}" +
+      ".rag-msg.assistant strong{color:var(--rag-accent,#4F46E5);}" +
+      ".rag-msg p,.rag-msg > div{margin-bottom:6px;}" +
+      ".rag-msg code{background:rgba(0,0,0,0.06);padding:1.5px 6px;border-radius:4px;font-family:'SF Mono',Consolas,Monaco,monospace;font-size:12.5px;}" +
       ".rag-msg.user code{background:rgba(255,255,255,0.2);}" +
+      ".rag-code-block{background:#161821;color:#e2e4ee;border-radius:8px;padding:11px 13px;" +
+      "margin:8px 0;overflow-x:auto;font-family:'SF Mono',Consolas,Monaco,monospace;" +
+      "font-size:12px;line-height:1.55;white-space:pre;}" +
+      ".rag-code-block code{background:none;padding:0;color:inherit;}" +
+      ".rag-code-lang{display:block;font-size:10px;letter-spacing:.05em;text-transform:uppercase;" +
+      "color:#8b93a7;margin-bottom:6px;font-family:'SF Mono',Consolas,Monaco,monospace;}" +
       "#rag-input-row{display:flex;border-top:1px solid #eee;padding:10px;gap:8px;background:#fff;}" +
       "#rag-input{flex:1;border:1px solid #ddd;border-radius:20px;padding:9px 14px;font-size:13.5px;outline:none;" +
       "transition:border-color .15s ease,box-shadow .15s ease;}" +
@@ -131,6 +154,7 @@
 
   function render() {
     var color = state.config.primary_color || "#4F46E5";
+    root.style.setProperty("--rag-accent", color);
     var fabWasOpen = root.querySelector && root.querySelector("#rag-fab.rag-fab-in");
 
     root.innerHTML =
@@ -201,11 +225,20 @@
       .join("");
     if (state.loading) {
       msgsHtml += '<div class="rag-typing"><span></span><span></span><span></span></div>';
+      if (state.slowNotice) {
+        msgsHtml += '<div class="rag-slow-notice">Waking up the assistant — first reply can take a few extra seconds.</div>';
+      }
     }
+    var statusHtml = state.connecting
+      ? '<span class="rag-status"><span class="rag-status-dot rag-status-connecting"></span>Connecting…</span>'
+      : '<span class="rag-status"><span class="rag-status-dot rag-status-online"></span>Online</span>';
     return (
       '<div id="rag-panel">' +
       '<div id="rag-header" style="background:' + color + '">' +
+      '<span class="header-text">' +
       '<span class="title">' + escapeHtml(state.config.name || "Assistant") + "</span>" +
+      statusHtml +
+      "</span>" +
       '<button id="rag-close" aria-label="Close chat">&times;</button>' +
       "</div>" +
       '<div id="rag-messages">' + msgsHtml + "</div>" +
@@ -265,6 +298,24 @@
 
     for (var i = 0; i < lines.length; i++) {
       var line = lines[i];
+
+      // Fenced code block: ```lang ... ``` (escaped, so check the escaped form).
+      var fenceMatch = line.match(/^```(\w*)\s*$/);
+      if (fenceMatch) {
+        flushList();
+        var lang = fenceMatch[1];
+        var codeLines = [];
+        i++;
+        while (i < lines.length && !/^```\s*$/.test(lines[i])) {
+          codeLines.push(lines[i]);
+          i++;
+        }
+        // i now points at the closing ``` line (or end of message if unterminated).
+        var langLabel = lang ? '<span class="rag-code-lang">' + lang + "</span>" : "";
+        htmlParts.push('<div class="rag-code-block">' + langLabel + codeLines.join("\n") + "</div>");
+        continue;
+      }
+
       var headingMatch = line.match(/^(#{1,4})\s+(.*)$/);
       var bulletMatch = line.match(/^\s*[-*]\s+(.*)$/);
       var numberedMatch = line.match(/^\s*\d+\.\s+(.*)$/);
@@ -272,7 +323,7 @@
       if (headingMatch) {
         flushList();
         var level = Math.min(headingMatch[1].length + 2, 6); // ### -> h5, keeps bubble text small
-        htmlParts.push("<h" + level + ' style="margin:8px 0 4px;font-size:14px;">' + inline(headingMatch[2]) + "</h" + level + ">");
+        htmlParts.push("<h" + level + ">" + inline(headingMatch[2]) + "</h" + level + ">");
       } else if (bulletMatch) {
         if (listType !== "ul") { flushList(); listType = "ul"; }
         listBuffer.push("<li>" + inline(bulletMatch[1]) + "</li>");
@@ -301,10 +352,13 @@
     fetchWithRetry(API_BASE + "/bots/" + BOT_ID + "/config", { method: "GET" }, 2)
       .then(function (data) {
         state.config = Object.assign(state.config, data);
+        state.connecting = false;
         render();
       })
       .catch(function (err) {
         console.warn("[RAG Widget] Could not load bot config, using defaults.", err);
+        state.connecting = false;
+        render();
       });
   }
 
@@ -314,7 +368,18 @@
 
     state.messages.push({ role: "user", text: text });
     state.loading = true;
+    state.slowNotice = false;
     render();
+
+    // If the backend is cold (Railway free tier, first request after idle),
+    // the reply can take several seconds. Rather than leave the typing
+    // indicator looking stuck, surface a reassuring note after a delay.
+    var slowTimer = setTimeout(function () {
+      if (state.loading) {
+        state.slowNotice = true;
+        render();
+      }
+    }, 4000);
 
     fetchWithRetry(
       API_BASE + "/chat",
@@ -336,7 +401,9 @@
         });
       })
       .finally(function () {
+        clearTimeout(slowTimer);
         state.loading = false;
+        state.slowNotice = false;
         render();
       });
   }
