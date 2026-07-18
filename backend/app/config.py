@@ -38,18 +38,15 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
 
     # --- Vector store ---
-    # NOTE: CHROMA_PERSIST_DIR is kept only as a legacy/local-dev fallback.
-    # In production on Railway, VectorStoreManager uses Chroma Cloud instead
-    # (see CHROMA_TENANT / CHROMA_DATABASE / CHROMA_API_KEY below), because
-    # Railway's app disk is ephemeral and wipes local Chroma data on redeploy.
-    CHROMA_PERSIST_DIR: str = str(BASE_DIR / "data" / "chroma")
+    # NOTE: vectors are stored directly in Postgres (see database.py ->
+    # VectorStoreManager) using DATABASE_URL below. This replaced ChromaDB
+    # (both local-disk and Chroma Cloud variants), which proved unreliable
+    # on Railway's free tier: local disk is ephemeral and wiped on every
+    # redeploy, and Chroma Cloud repeatedly hit client/server version
+    # mismatches outside our control. Postgres is already required for the
+    # bot registry, so reusing it removes an entire external dependency.
 
-    # --- Chroma Cloud (persistent vector storage across redeploys) ---
-    CHROMA_TENANT: str = ""
-    CHROMA_DATABASE: str = ""
-    CHROMA_API_KEY: str = ""
-
-    # --- Bot registry database (persistent across redeploys) ---
+    # --- Bot registry + vector store database (persistent across redeploys) ---
     # Auto-injected by Railway once you add the PostgreSQL plugin --
     # no need to set this manually.
     DATABASE_URL: str = ""
@@ -83,5 +80,5 @@ class Settings(BaseSettings):
 settings = Settings()
 
 # Ensure required directories exist at import time (self-healing on fresh deploys)
-for d in [settings.CHROMA_PERSIST_DIR, settings.UPLOAD_DIR, settings.LOG_DIR]:
+for d in [settings.UPLOAD_DIR, settings.LOG_DIR]:
     os.makedirs(d, exist_ok=True)

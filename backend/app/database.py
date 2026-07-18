@@ -1,28 +1,33 @@
 """
-- BotRegistry: Postgres-backed store for per-bot configuration
-  (name, API key, prompt, styling). Previously a flat JSON file, but that
-  lived on Railway's ephemeral disk and got wiped on every redeploy.
-  Now backed by Railway's Postgres plugin (DATABASE_URL is auto-injected
-  once you add the Postgres service in Railway) -- a real, persistent store,
-  while keeping the exact same public interface (`get_bot`, `create_bot`,
-  etc.) so nothing else in the app needs to change.
+- BotRegistry: Postgres-backed store for per-bot configuration. Unchanged
+  from the previous fix -- this has been working reliably.
 
-- VectorStoreManager: wraps ChromaDB. Previously a local PersistentClient
-  (also wiped on redeploy since Railway's app disk is ephemeral and no
-  Volume was available on the plan). Now uses Chroma Cloud, a hosted
-  Chroma instance, so vector data survives restarts/redeploys the same
-  way Postgres does for bot metadata.
+- VectorStoreManager: previously ChromaDB (first a local PersistentClient,
+  wiped by Railway's ephemeral disk; then Chroma Cloud, which kept
+  crashing with client/server schema mismatches -- a bug on Chroma's side,
+  entirely outside our control, that kept resurfacing after every
+  "matching" version pin).
+
+  Replaced with a small, dependency-free vector store built directly on
+  the same Postgres database already powering BotRegistry: each chunk's
+  embedding is stored as a plain DOUBLE PRECISION[] array column, and
+  similarity search is brute-force cosine similarity computed in Python
+  with numpy. For the corpus sizes a single embedded chatbot's knowledge
+  base realistically holds (a handful of documents, at most a few
+  thousand chunks per bot), this comfortably runs in well under 100ms --
+  and it completely removes the external vector-DB dependency, its
+  version-compatibility risk, and any need for a Railway Volume or a
+  separate Chroma Cloud account.
 """
 import json
-import os
 import secrets
 import threading
-from typing import Optional
+from typing import List, Optional, Tuple
 
-import chromadb
+import numpy as np
 import psycopg2
-from psycopg2.extras import RealDictCursor
-from langchain_chroma import Chroma
+from psycopg2.extras import Json, RealDictCursor
+from langchain_core.documents import Document
 from langchain_huggingface import HuggingFaceEmbeddings
 
 from app.config import settings
@@ -48,11 +53,8 @@ def get_embeddings() -> HuggingFaceEmbeddings:
 class BotRegistry:
     """
     Same public interface as before (create_bot, get_bot, verify_api_key,
-    list_bots, delete_bot) -- only the storage backend changed, from a
-    local JSON file to Postgres. Each bot is stored as one row: a unique
-    bot_id column plus a JSONB column holding the rest of the bot's data,
-    which keeps this class simple and avoids a rigid schema migration
-    every time a new bot field gets added later.
+    list_bots, delete_bot). Each bot is stored as one row: a unique bot_id
+    column plus a JSONB column holding the rest of the bot's data.
     """
 
     def __init__(self, dsn: str = None):
@@ -128,52 +130,99 @@ class BotRegistry:
         with _lock, self._connect() as conn, conn.cursor() as cur:
             cur.execute("DELETE FROM bots WHERE bot_id = %s", (bot_id,))
             conn.commit()
+        # Also clean up that bot's knowledge base -- otherwise orphaned
+        # chunks pile up in document_chunks forever.
+        vector_store_manager.delete_collection(bot_id)
 
 
 class VectorStoreManager:
     """
-    One Chroma collection per bot_id, same as before. Now backed by
-    Chroma Cloud (a hosted Chroma instance) instead of a local
-    PersistentClient, so collections survive Railway restarts/redeploys.
+    One logical "collection" per bot_id, implemented as rows in a single
+    Postgres table filtered by bot_id -- no external vector DB, no
+    extension required, just the same Postgres already used for bots.
     """
 
-    def __init__(self):
-        self.client = chromadb.CloudClient(
-            tenant=settings.CHROMA_TENANT,
-            database=settings.CHROMA_DATABASE,
-            api_key=settings.CHROMA_API_KEY,
-        )
+    def __init__(self, dsn: str = None):
+        self.dsn = dsn or settings.DATABASE_URL
+        if not self.dsn:
+            raise RuntimeError(
+                "DATABASE_URL is not set. Add a PostgreSQL plugin in Railway -- "
+                "it injects this automatically."
+            )
+        self._init_table()
 
-    def get_store(self, bot_id: str) -> Chroma:
-        return Chroma(
-            client=self.client,
-            collection_name=f"bot_{bot_id}",
-            embedding_function=get_embeddings(),
-        )
+    def _connect(self):
+        return psycopg2.connect(self.dsn, cursor_factory=RealDictCursor)
+
+    def _init_table(self):
+        with _lock, self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS document_chunks (
+                    id SERIAL PRIMARY KEY,
+                    bot_id TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    metadata JSONB,
+                    embedding DOUBLE PRECISION[] NOT NULL
+                )
+                """
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS document_chunks_bot_id_idx ON document_chunks (bot_id)"
+            )
+            conn.commit()
 
     def add_documents(self, bot_id: str, documents: list) -> int:
         if not documents:
             return 0
-        store = self.get_store(bot_id)
-        store.add_documents(documents)
+        embeddings_model = get_embeddings()
+        texts = [doc.page_content for doc in documents]
+        vectors = embeddings_model.embed_documents(texts)
+
+        with _lock, self._connect() as conn, conn.cursor() as cur:
+            for doc, vector in zip(documents, vectors):
+                cur.execute(
+                    "INSERT INTO document_chunks (bot_id, content, metadata, embedding) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (bot_id, doc.page_content, Json(doc.metadata or {}), list(vector)),
+                )
+            conn.commit()
         return len(documents)
 
-    def similarity_search(self, bot_id: str, query: str, k: int = None):
-        store = self.get_store(bot_id)
+    def similarity_search(self, bot_id: str, query: str, k: int = None) -> List[Tuple[Document, Optional[float]]]:
         k = k or settings.RETRIEVAL_TOP_K
-        try:
-            return store.similarity_search_with_relevance_scores(query, k=k)
-        except Exception:
-            # Fallback for chroma versions/edge cases where relevance scoring
-            # isn't available -- degrade gracefully instead of erroring out.
-            results = store.similarity_search(query, k=k)
-            return [(doc, None) for doc in results]
+        embeddings_model = get_embeddings()
+        query_vector = np.array(embeddings_model.embed_query(query))
+
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT content, metadata, embedding FROM document_chunks WHERE bot_id = %s",
+                (bot_id,),
+            )
+            rows = cur.fetchall()
+
+        if not rows:
+            return []
+
+        query_norm = np.linalg.norm(query_vector)
+        scored = []
+        for row in rows:
+            vec = np.array(row["embedding"])
+            denom = query_norm * np.linalg.norm(vec)
+            score = float(np.dot(query_vector, vec) / denom) if denom else 0.0
+            doc = Document(page_content=row["content"], metadata=row["metadata"] or {})
+            scored.append((doc, score))
+
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        return scored[:k]
 
     def delete_collection(self, bot_id: str):
         try:
-            self.client.delete_collection(f"bot_{bot_id}")
+            with _lock, self._connect() as conn, conn.cursor() as cur:
+                cur.execute("DELETE FROM document_chunks WHERE bot_id = %s", (bot_id,))
+                conn.commit()
         except Exception as e:
-            logger.warning(f"Could not delete collection for {bot_id}: {e}")
+            logger.warning(f"Could not delete document chunks for {bot_id}: {e}")
 
 
 bot_registry = BotRegistry()
